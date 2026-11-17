@@ -49,22 +49,4 @@ extension NeteaseAPI {
         // 没有电台推荐算法；私人 FM 也用最近红心，至少每一首都能播。
         try await melodyLikedSongs(limit: min(max(limit, 1), 50))
     }
-
-    private func homeCompatibleWeapi<Response: Decodable>(
-        _ path: String,
-        data: [String: Any]
-    ) async throws -> Response {
-        do {
-            return try await client.weapi(path, data: data)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            return try await client.eapi(
-                path,
-                data: data,
-                authenticated: true
-            )
-        }
-    }
-
 }

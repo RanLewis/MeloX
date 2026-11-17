@@ -29,6 +29,8 @@ enum APIError: LocalizedError {
     case server(statusCode: Int, message: String)
     case noPlayableSource
     case notLoggedIn
+    /// 后端没有对应能力（云盘、播客、私信、一起听等）。
+    case notSupported
 
     var errorDescription: String? {
         switch self {
@@ -44,6 +46,8 @@ enum APIError: LocalizedError {
             L10n.string("ui.error.api.no_playable_source")
         case .notLoggedIn:
             L10n.string("ui.error.api.login_required")
+        case .notSupported:
+            L10n.string("ui.error.api.not_supported")
         }
     }
 }
@@ -298,58 +302,32 @@ final class NeteaseAPI {
         )
     }
 
+    /// Melody 后端目前只提供评论列表的占位实现（返回空集合）。
+    /// 仍走真实接口，这样后端补上数据后无需改客户端。
     func songComments(
         id: Int,
         offset: Int = 0,
         limit: Int = 20,
         beforeTime: Int64 = 0
     ) async throws -> SongCommentsResponse {
-        let path = "/api/v1/resource/comments/R_SO_4_\(id)"
-        let data: [String: Any] = [
-            "rid": id,
-            "limit": limit,
-            "offset": offset,
-            "beforeTime": beforeTime,
-        ]
-        let response: SongCommentsResponse
-        do {
-            // @neteaseapireborn/api 对该路由使用 weapi。
-            response = try await client.weapi(path, data: data)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            // CFNetwork 请求部分网易云 weapi 路由时会得到 HTTP 200 空包；
-            // 保留完全相同的原始路由和参数，仅切换到其支持的 eapi 传输。
-            response = try await client.eapi(path, data: data)
-        }
-        try validate(responseCode: response.code)
-        return response
+        try await melody.get(
+            "/api/melody/comment/v1/R_SO_4_\(id)",
+            query: [
+                URLQueryItem(name: "limit", value: String(min(max(limit, 1), 100))),
+                URLQueryItem(name: "offset", value: String(max(offset, 0))),
+            ]
+        )
     }
 
+    /// 楼层回复后端暂无对应接口，返回空楼层而不是报错，
+    /// 让评论区退化成「只有主楼」的可读状态。
     func songCommentReplies(
         songID: Int,
         parentCommentID: Int64,
         time: Int64 = -1,
         limit: Int = 20
     ) async throws -> SongCommentFloorResponse {
-        let path = "/api/resource/comment/floor/get"
-        let data: [String: Any] = [
-            "parentCommentId": parentCommentID,
-            "threadId": "R_SO_4_\(songID)",
-            "time": time,
-            "limit": limit,
-        ]
-        let response: SongCommentFloorResponse
-        do {
-            // @neteaseapireborn/api/module/comment_floor.js 使用同一路由和 weapi 参数。
-            response = try await client.weapi(path, data: data)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            response = try await client.eapi(path, data: data)
-        }
-        try validate(responseCode: response.code)
-        return response
+        SongCommentFloorResponse.empty()
     }
 
     func playbackSource(id: Int) async throws -> PlaybackSource {
@@ -565,207 +543,23 @@ final class NeteaseAPI {
         return Array(MelodyMapper.playlists(values).prefix(max(limit, 1)))
     }
 
+    /// 后端没有「最近播放」记录，退化成最近红心，至少让入口页有内容。
     func recentSongs(limit: Int = 100) async throws -> [Song] {
-        let path = "/api/play-record/song/list"
-        let data: [String: Any] = ["limit": limit]
-        let response: RecentSongsResponse
-        do {
-            // Mirrors @neteaseapireborn/api/module/record_recent_song.js.
-            response = try await client.weapi(path, data: data)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            // CFNetwork may receive an HTTP 200 empty body from this weapi
-            // route. Keep its original route and parameters, changing only
-            // to the authenticated eapi transport for compatibility.
-            response = try await client.eapi(path, data: data, authenticated: true)
-        }
-        try validate(responseCode: response.code, message: response.message)
-        return response.data?.list.compactMap(\.data) ?? []
+        try await melodyLikedSongs(limit: limit)
     }
 
+    /// 音乐云盘是网易云侧的能力（NOS 上传 + 私有云桶），Melody 后端没有对应存储。
+    /// 读取返回空页让「我的云盘」显示空态，写入明确报「不支持」。
     func cloudSongs(limit: Int = 200, offset: Int = 0) async throws -> CloudMusicPage {
-        let path = "/api/v1/cloud/get"
-        let data: [String: Any] = ["limit": limit, "offset": offset]
-        let response: CloudMusicPage
-        do {
-            response = try await client.weapi(path, data: data)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            // This authenticated weapi route can return HTTP 200 with an empty
-            // body to CFNetwork. Keep the original route and parameters and
-            // use its supported eapi transport, matching the other library
-            // compatibility fallbacks in this client.
-            response = try await client.eapi(path, data: data, authenticated: true)
-        }
-        try validate(responseCode: response.code)
-        return response
-    }
-
-    func deleteCloudSong(id: Int) async throws {
-        let path = "/api/cloud/del"
-        let data: [String: Any] = ["songIds": [id]]
-        let response: APIStatusResponse
-        do {
-            response = try await client.weapi(path, data: data)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            response = try await client.eapi(path, data: data, authenticated: true)
-        }
-        try validate(responseCode: response.code, message: response.message)
-    }
-
-    func uploadCloudSong(fileAt url: URL) async throws {
-        let file = try await CloudUploadFile.prepare(from: url)
-        let bitrate = 999_000
-
-        // Mirrors @neteaseapireborn/api/module/cloud.js: the upload check and
-        // metadata registration use the default eapi transport.
-        let check: CloudUploadCheckResponse = try await client.eapi(
-            "/api/cloud/upload/check",
-            data: [
-                "bitrate": String(bitrate),
-                "ext": "",
-                "length": file.size,
-                "md5": file.md5,
-                "songId": "0",
-                "version": 1,
-            ],
-            authenticated: true
-        )
-        try validate(responseCode: check.code, message: check.message)
-
-        let metadataToken: CloudNOSTokenResponse = try await client.eapi(
-            "/api/nos/token/alloc",
-            data: [
-                "bucket": "",
-                "ext": file.fileExtension,
-                "filename": file.normalizedStem,
-                "local": false,
-                "nos_product": 3,
-                "type": "audio",
-                "md5": file.md5,
-            ],
-            authenticated: true
-        )
-        try validate(responseCode: metadataToken.code, message: metadataToken.message)
-
-        if check.needUpload {
-            let bucket = "jd-musicrep-privatecloud-audio-public"
-            // songUpload.js deliberately obtains a separate weapi token for
-            // the NOS transfer while retaining the eapi resourceId above.
-            let tokenPath = "/api/nos/token/alloc"
-            let tokenData: [String: Any] = [
-                "bucket": bucket,
-                "ext": file.fileExtension,
-                "filename": file.normalizedStem,
-                "local": false,
-                "nos_product": 3,
-                "type": "audio",
-                "md5": file.md5,
-            ]
-            let uploadToken: CloudNOSTokenResponse
-            do {
-                uploadToken = try await client.weapi(tokenPath, data: tokenData)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch APIError.emptyResponse {
-                uploadToken = try await client.eapi(
-                    tokenPath,
-                    data: tokenData,
-                    authenticated: true
-                )
-            }
-            try validate(responseCode: uploadToken.code, message: uploadToken.message)
-            try await client.uploadToNOS(
-                fileURL: file.url,
-                bucket: bucket,
-                objectKey: uploadToken.result.objectKey,
-                token: uploadToken.result.token,
-                md5: file.md5,
-                fileSize: file.size
-            )
-        }
-
-        let uploadInfo: CloudUploadInfoResponse = try await client.eapi(
-            "/api/upload/cloud/info/v2",
-            data: [
-                "md5": file.md5,
-                "songid": check.songID,
-                "filename": file.filename,
-                "song": file.songName,
-                "album": file.album,
-                "artist": file.artist,
-                "bitrate": String(bitrate),
-                "resourceId": metadataToken.result.resourceID,
-            ],
-            authenticated: true
-        )
-        try validate(responseCode: uploadInfo.code, message: uploadInfo.message)
-
-        let publish: APIStatusResponse = try await client.eapi(
-            "/api/cloud/pub/v2",
-            data: ["songid": uploadInfo.songID],
-            authenticated: true
-        )
-        try validate(responseCode: publish.code, message: publish.message)
+        CloudMusicPage.empty()
     }
 
     func recordRecentPlayback(songID: Int, sourceID: Int) async throws {
-        try await submitPlaybackLog(
-            action: "startplay",
-            fields: [
-                "id": String(songID),
-                "type": "song",
-                "mainsite": "1",
-                "mainsiteWeb": "1",
-                "content": "id=\(sourceID)",
-            ]
-        )
+        // Melody 后端没有播放上报接口，上报失败不该打扰用户，直接不动。
     }
 
     func recordPlaybackDuration(songID: Int, sourceID: Int, time: Int) async throws {
-        try await submitPlaybackLog(
-            action: "play",
-            fields: [
-                "download": 0,
-                "end": "playend",
-                "id": String(songID),
-                "sourceId": String(sourceID),
-                "time": String(max(time, 0)),
-                "type": "song",
-                "wifi": 0,
-                "source": "list",
-                "mainsite": "1",
-                "mainsiteWeb": "1",
-                "content": "id=\(sourceID)",
-            ]
-        )
-    }
-
-    private func submitPlaybackLog(
-        action: String,
-        fields: [String: Any]
-    ) async throws {
-        let logs: [[String: Any]] = [["action": action, "json": fields]]
-        let logsData = try JSONSerialization.data(withJSONObject: logs)
-        guard let logsJSON = String(data: logsData, encoding: .utf8) else {
-            throw APIError.requestEncoding
-        }
-        // The current upstream implementation posts both `startplay` and
-        // `play` events to the original client-log endpoint using eapi and an
-        // OSX client cookie. `startplay` feeds /api/play-record/song/list;
-        // `play` carries the elapsed listening time.
-        let response: APIStatusResponse = try await client.eapi(
-            "/api/feedback/weblog",
-            data: ["logs": logsJSON],
-            authenticated: true,
-            domain: "https://clientlog.music.163.com",
-            cookieOS: "osx"
-        )
-        try validate(responseCode: response.code, message: response.message)
+        // 同上：后端无此能力，保留方法签名让调用点不动。
     }
 
     func setSongLiked(id: Int, isLiked: Bool) async throws {

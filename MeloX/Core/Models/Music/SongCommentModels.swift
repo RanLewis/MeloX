@@ -107,6 +107,13 @@ struct SongCommentFloorResponse: Decodable {
     let data: SongCommentFloorData
 }
 
+extension SongCommentFloorResponse {
+    /// 后端没有楼层回复接口时的空占位，让评论区退化为「只有主楼」。
+    static func empty() -> SongCommentFloorResponse {
+        SongCommentFloorResponse(code: 200, data: SongCommentFloorData.empty())
+    }
+}
+
 struct SongCommentFloorData: Decodable {
     let ownerComment: SongComment?
     let comments: [SongComment]
@@ -123,6 +130,30 @@ struct SongCommentFloorData: Decodable {
         comments = try container.decodeIfPresent([SongComment].self, forKey: .comments) ?? []
         totalCount = try container.decodeIfPresent(Int.self, forKey: .totalCount) ?? comments.count
         hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+    }
+}
+
+extension SongCommentFloorData {
+    fileprivate init(
+        ownerComment: SongComment?,
+        comments: [SongComment],
+        totalCount: Int,
+        hasMore: Bool
+    ) {
+        self.ownerComment = ownerComment
+        self.comments = comments
+        self.totalCount = totalCount
+        self.hasMore = hasMore
+    }
+
+    /// 后端没有楼层回复接口时的空占位。
+    static func empty() -> SongCommentFloorData {
+        SongCommentFloorData(
+            ownerComment: nil,
+            comments: [],
+            totalCount: 0,
+            hasMore: false
+        )
     }
 }
 

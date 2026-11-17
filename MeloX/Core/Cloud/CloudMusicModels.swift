@@ -55,6 +55,29 @@ struct CloudMusicPage: Decodable {
     }
 }
 
+extension CloudMusicPage {
+    fileprivate init(
+        code: Int,
+        data: [CloudSong],
+        count: Int,
+        size: Int64,
+        maxSize: Int64,
+        hasMore: Bool
+    ) {
+        self.code = code
+        self.data = data
+        self.count = count
+        self.size = size
+        self.maxSize = maxSize
+        self.hasMore = hasMore
+    }
+
+    /// Melody 后端没有云盘存储，用它表示「空云盘」而不是抛错。
+    static func empty() -> CloudMusicPage {
+        CloudMusicPage(code: 200, data: [], count: 0, size: 0, maxSize: 0, hasMore: false)
+    }
+}
+
 struct CloudUploadCheckResponse: Decodable {
     let code: Int
     let needUpload: Bool

@@ -193,7 +193,8 @@
 "ui.error.api.empty_response" = "The music service returned an empty response (%ld).";
 "ui.error.api.server" = "Request failed (%ld): %@";
 "ui.error.api.no_playable_source" = "This song may be unavailable due to copyright or regional restrictions.";
-"ui.error.api.login_required" = "Sign in to NetEase Cloud Music first.";
+"ui.error.api.not_supported" = "This feature is not available on the current Melody backend.";
+"ui.error.api.login_required" = "Sign in to your Melody server first.";
 "ui.error.api.operation_incomplete" = "NetEase Cloud Music did not complete the operation.";
 "ui.error.api.decode_with_hex" = "Could not decode %ld bytes (%@): %@";
 "ui.error.api.decode" = "Could not decode %ld bytes (%@): %@";
@@ -385,7 +386,7 @@
 "ui.settings.account.logout.message.downloads" = "The saved NetEase sign-in cookie and loaded account data will be removed from this device. Downloaded songs will not be deleted.";
 "ui.settings.account.logout.message" = "The saved NetEase sign-in cookie and loaded account data will be removed from this device.";
 "ui.settings.account.open.hint" = "Opens account information and your profile";
-"ui.settings.account.netease_account" = "NetEase Cloud Music Account";
+"ui.settings.account.netease_account" = "Melody Account";
 "ui.settings.account.loading" = "Loading Account Information";
 "ui.settings.account.login" = "Sign In to NetEase Cloud Music";
 "ui.settings.account.login.subtitle" = "Sync favorites, Cloud Music, and playback history";
@@ -949,7 +950,7 @@
 "ui.clipboard.listen_together_prompt" = "View the Listen Together invitation from the clipboard? You can review the invitation link before joining.";
 "ui.clipboard.open_song" = "Open Song";
 "ui.clipboard.view_invitation" = "View Invitation";
-"ui.onboarding.welcome.subtitle" = "Discover, play, and collect music from NetEase Cloud Music in a native app.";
+"ui.onboarding.welcome.subtitle" = "Discover, play, and collect music from your Melody library in a native app.";
 "ui.legal.unofficial_disclaimer" = "MeloX is an unofficial third-party client and is not affiliated with, partnered with, or authorized by NetEase Cloud Music or its affiliates.";
 "ui.legal.projects_licenses.title" = "Projects & Licenses";
 "ui.onboarding.account.logged_in_message" = "Your favorite songs, playlists, and listening history appear in Library.";
@@ -958,11 +959,11 @@
 "ui.service.netease_cloud_music" = "NetEase Cloud Music";
 "ui.account.netease_account" = "NetEase Cloud Music Account";
 "ui.account.logged_in" = "Signed In";
-"ui.onboarding.account.connect" = "Connect NetEase Cloud Music";
-"ui.onboarding.account.connect_message" = "Sign in to sync your personal music library and use account features. Signing in is not required to start using MeloX.";
-"ui.onboarding.benefit.sync_library" = "Sync favorite songs, playlists, and listening history";
-"ui.onboarding.benefit.personalized_content" = "Access Daily Recommendations and other personalized content";
-"ui.onboarding.benefit.local_cookie" = "Your sign-in cookie is stored only on this device";
+"ui.onboarding.account.connect" = "Connect Melody Server";
+"ui.onboarding.account.connect_message" = "Enter your Melody server's access password or API token to sync your playlists and liked songs. Signing in is not required to start using MeloX.";
+"ui.onboarding.benefit.sync_library" = "Sync liked songs and your own playlists";
+"ui.onboarding.benefit.personalized_content" = "Unlock Your Playlists and recommendations after signing in";
+"ui.onboarding.benefit.local_cookie" = "Your access token is stored only on this device";
 "ui.settings.about.shareholders" = "Shareholders";
 
 "ui.release_notes.title" = "Release Notes";
@@ -1083,7 +1084,7 @@
 "ui.home.pull_to_refresh" = "Pull to refresh and try again.";
 "ui.home.login_for_personalized_content" = "Sign in to NetEase Cloud Music to see the full personalized experience.";
 "ui.home.error.no_private_radar" = "No available Private Radar playlist was found in the current recommendations.";
-"ui.home.error.login_required" = "Sign in to NetEase Cloud Music first.";
+"ui.home.error.login_required" = "Sign in to your Melody server first.";
 "ui.home.error.liked_songs_required" = "Favorite some songs before using Heart Mode.";
 "ui.home.error.current_song_required" = "Play a song before searching for similar music.";
 "ui.home.error.no_playable_recommendations" = "NetEase Cloud Music did not return any playable recommendations.";
@@ -2074,7 +2075,7 @@
 
 "ui.watch.playlists.load_failed" = "Could Not Load Playlists";
 "ui.watch.playlists.loading" = "Loading Playlists";
-"ui.watch.playlists.login_required" = "Sign in to NetEase Cloud Music first.";
+"ui.watch.playlists.login_required" = "Sign in to your Melody server first.";
 "ui.watch.playlists.mine" = "My Playlists";
 "ui.watch.playlists.songs_loading" = "Loading Songs";
 
