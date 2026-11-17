@@ -1,0 +1,83 @@
+name: Melody Build
+
+# 这个流水线只为本 fork 服务：把 iOS 未签名包发到固定 tag `melody-latest`，
+# 换掉 App 内的音源后端之后可以随时下载安装，不依赖上游的 Telegram 通知与发版规则。
+on:
+  push:
+    branches:
+      - melody
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: melody-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    name: Build unsigned iOS IPA
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 项目要求 iOS 26 deployment target；挑镜像里版本最高的 Xcode。
+          XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          if [[ -z "${XCODE_APP}" ]]; then
+            echo "no Xcode installation found"
+            exit 1
+          fi
+          sudo xcode-select -s "${XCODE_APP}/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: |
+          set -o pipefail
+          bash build_ios_unsigned.sh 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Publish build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LOG="$RUNNER_TEMP/build.log"
+          [ -f "$LOG" ] || echo "no build log" > "$LOG"
+          gh release view melody-latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
+            || gh release create melody-latest --repo "${GITHUB_REPOSITORY}" \
+                 --prerelease --title "Melody build" --notes "Rolling build."
+          gh release upload melody-latest "$LOG" --clobber --repo "${GITHUB_REPOSITORY}"
+
+      - name: Publish IPA
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          IPA=build/MeloX-iOS-unsigned.ipa
+          [ -f "$IPA" ] || { echo "IPA missing"; exit 1; }
+          ls -lh "$IPA"
+          gh release view melody-latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
+            || gh release create melody-latest --repo "${GITHUB_REPOSITORY}" \
+                 --prerelease --title "Melody build (unsigned IPA)" \
+                 --notes "Rolling unsigned build of the Melody fork. Re-signed locally before install."
+          gh release upload melody-latest "$IPA" --clobber --repo "${GITHUB_REPOSITORY}"
+
+      - name: Upload artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MeloX-iOS-unsigned
+          path: build/MeloX-iOS-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
