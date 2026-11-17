@@ -1240,7 +1240,7 @@ final class PlayerStore {
                 return true
             case .server(let statusCode, _) where statusCode >= 500:
                 return true
-            case .server, .requestEncoding, .notLoggedIn:
+            case .server, .requestEncoding, .notLoggedIn, .notSupported:
                 return false
             }
         }

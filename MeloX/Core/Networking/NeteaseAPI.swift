@@ -554,6 +554,14 @@ final class NeteaseAPI {
         CloudMusicPage.empty()
     }
 
+    func deleteCloudSong(id: Int) async throws {
+        throw APIError.notSupported
+    }
+
+    func uploadCloudSong(fileAt url: URL) async throws {
+        throw APIError.notSupported
+    }
+
     func recordRecentPlayback(songID: Int, sourceID: Int) async throws {
         // Melody 后端没有播放上报接口，上报失败不该打扰用户，直接不动。
     }
