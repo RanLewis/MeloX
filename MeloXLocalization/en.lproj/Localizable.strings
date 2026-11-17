@@ -2168,3 +2168,12 @@
 "ui.library.search.loading" = "Searching all favorites…";
 "ui.library.search.empty.title" = "No favorite songs found";
 "ui.library.search.empty.description" = "Try another song, artist, or album name.";
+"ui.melody.login.mode" = "Sign-in method";
+"ui.melody.login.mode.password" = "Password";
+"ui.melody.login.mode.token" = "Token";
+"ui.melody.login.server" = "Server";
+"ui.melody.login.server.footer" = "Leave it as is unless you host your own Melody backend.";
+"ui.melody.login.password" = "Panel password";
+"ui.melody.login.token" = "API token";
+"ui.melody.login.password.footer" = "The password is exchanged for an API token on sign-in; the token stays on this device.";
+"ui.melody.login.token.footer" = "Paste a token created in your dashboard. It is verified before it is saved.";

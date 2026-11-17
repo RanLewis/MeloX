@@ -62,6 +62,11 @@ final class NeteaseAPI {
     @ObservationIgnored
     let client: NeteaseDirectClient
 
+    /// 本 fork 的音源后端。对外方法都改走这里；`client` 只留给尚未迁移的
+    /// 播客 / 社交 / 听歌一起听扩展，避免一次性改动太大。
+    @ObservationIgnored
+    let melody: MelodyClient
+
     @ObservationIgnored
     let pageContentCache: PageContentCache
 
@@ -73,6 +78,7 @@ final class NeteaseAPI {
         self.settings = settings
         pageContentCache = PageContentCache(settings: settings)
         client = NeteaseDirectClient(settings: settings, session: session)
+        melody = MelodyClient(settings: settings, session: session)
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let isCellular = path.usesInterfaceType(.cellular)
             Task { @MainActor [weak self] in
@@ -87,140 +93,122 @@ final class NeteaseAPI {
     }
 
     func recommendedPlaylists(limit: Int = 10) async throws -> [Playlist] {
-        let response: PersonalizedResponse = try await client.eapi(
-            "/api/personalized/playlist",
-            data: ["limit": limit, "total": true, "n": 1_000]
-        )
-        return response.result
+        // 后端没有"推荐"出口，用它真正拥有的东西顶上：登录用户自己的歌单。
+        let values: [MelodyPlaylistVO] = try await melody.get("/api/melody/playlist/user")
+        return Array(MelodyMapper.playlists(values).prefix(max(limit, 1)))
     }
 
     func newAlbums(limit: Int = 10, area: String? = nil) async throws -> [Album] {
-        let response: NewAlbumsResponse = try await client.eapi(
-            "/api/album/new",
-            data: ["limit": limit, "offset": 0, "total": true, "area": area ?? settings.musicArea]
-        )
-        return response.albums
+        // 没有"新碟上架"数据源；从收藏歌曲里按专辑去重，给出的是真实存在的封面墙。
+        let songs = try await likedSongs(limit: 300)
+        var seen = Set<Int>()
+        var albums: [Album] = []
+        for song in songs {
+            guard let album = song.album,
+                  album.id > 0,
+                  seen.insert(album.id).inserted else { continue }
+            albums.append(album)
+            if albums.count >= max(limit, 1) { break }
+        }
+        return albums
     }
 
     func toplists() async throws -> [Playlist] {
-        let response: ToplistsResponse = try await client.eapi("/api/toplist")
-        return response.list
+        // 没有榜单接口；我的歌单是唯一"有顺序、会变"的列表，用它占位。
+        try await recommendedPlaylists(limit: 12)
     }
 
     func topArtists() async throws -> [Artist] {
-        let response: ArtistToplistResponse = try await client.eapi("/api/toplist/artist")
-        return response.list.artists
+        // 从收藏歌曲里聚合歌手，按出现次数排序。后端没有歌手榜单。
+        let songs = try await likedSongs(limit: 300)
+        var counts: [Int: (artist: Artist, hits: Int)] = [:]
+        for song in songs {
+            for artist in song.artists where artist.id > 0 {
+                let current = counts[artist.id]
+                counts[artist.id] = (current?.artist ?? artist, (current?.hits ?? 0) + 1)
+            }
+        }
+        return counts.values
+            .sorted { $0.hits > $1.hits }
+            .map(\.artist)
     }
 
     func playlists(category: String, offset: Int = 0, limit: Int = 50) async throws -> [Playlist] {
-        switch category {
-        case "推荐歌单":
-            return try await recommendedPlaylists(limit: limit)
-        case "排行榜":
-            return try await toplists()
-        case "精品歌单":
-            let response: TopPlaylistsResponse = try await client.eapi(
-                "/api/playlist/highquality/list",
-                data: ["cat": "全部", "limit": limit, "lasttime": 0, "total": true]
-            )
-            return response.playlists
-        default:
-            let response: TopPlaylistsResponse = try await client.eapi(
-                "/api/playlist/list",
-                data: ["cat": category, "order": "hot", "offset": offset, "limit": limit, "total": true]
-            )
-            return response.playlists
-        }
+        // 分类广场依赖网易的歌单库，后端只有"我自己的歌单"，所以任何分类都返回同一份。
+        let all = try await recommendedPlaylists(limit: 2_000)
+        let start = min(max(offset, 0), all.count)
+        let end = min(start + max(limit, 1), all.count)
+        return Array(all[start..<end])
     }
 
     func playlist(
         id: Int,
         trackLimit: Int? = 100
     ) async throws -> Playlist {
-        let embeddedTrackCount = min(max(trackLimit ?? 100, 0), 100)
-        let response: PlaylistDetailResponse = try await client.eapi(
-            "/api/v6/playlist/detail",
-            data: ["id": id, "n": embeddedTrackCount, "s": 8]
+        // 后端一次返回全量曲目（和网易的分页语义不同），客户端自己截断。
+        let response: MelodyPlaylistDetailVO = try await melody.get(
+            "/api/melody/playlist/detail",
+            query: [URLQueryItem(name: "id", value: String(id))]
         )
-        var playlist = response.playlist
-        guard !playlist.trackIDs.isEmpty else {
-            if let trackLimit,
-               playlist.tracks.count > trackLimit {
-                playlist.tracks = Array(
-                    playlist.tracks.prefix(max(trackLimit, 0))
-                )
-            }
-            return playlist
+        guard var playlist = MelodyMapper.playlistDetail(response) else {
+            throw APIError.invalidResponse
         }
-
-        let requestedTrackIDs = if let trackLimit {
-            Array(playlist.trackIDs.prefix(max(trackLimit, 0)).map(\.id))
-        } else {
-            playlist.trackIDs.map(\.id)
+        if let trackLimit, playlist.tracks.count > trackLimit {
+            let kept = Array(playlist.tracks.prefix(max(trackLimit, 0)))
+            let ids = Set(kept.map(\.id))
+            playlist.tracks = kept
+            playlist.trackIDs = playlist.trackIDs.filter { ids.contains($0.id) }
         }
-        playlist.tracks = try await songDetailsCollection(
-            ids: requestedTrackIDs,
-            prefetched: playlist.tracks
-        )
         return playlist
     }
 
     func album(id: Int) async throws -> (Album, [Song]) {
-        let response: AlbumDetailResponse = try await client.eapi("/api/v1/album/\(id)")
-        return (response.album, response.songs)
+        let response: MelodyAlbumDetailVO = try await melody.get("/api/melody/album/\(id)")
+        guard let albumVO = response.album else { throw APIError.invalidResponse }
+        return (MelodyMapper.album(albumVO), MelodyMapper.songs(response.songs))
     }
 
     func albumSubscriptionStatus(id: Int) async throws -> Bool {
-        let response: AlbumDynamicResponse = try await client.weapi(
-            "/api/album/detail/dynamic",
-            data: ["id": id]
-        )
-        try validate(responseCode: response.code)
-        return response.isSub ?? false
+        // 后端没有"收藏专辑"这一层，UI 只是拿它决定按钮状态。
+        false
     }
 
     func setAlbumSubscribed(id: Int, isSubscribed: Bool) async throws {
-        let path = isSubscribed ? "/api/album/sub" : "/api/album/unsub"
-        let response: APIStatusResponse = try await client.weapi(
-            path,
-            data: ["id": id]
-        )
-        try validate(responseCode: response.code, message: response.message)
+        // 同上：没有后端存储，操作不落盘，但也不该让 UI 报错。
     }
 
     func artist(id: Int) async throws -> (Artist, [Song], [Album]) {
-        let detail: ArtistDetailResponse = try await client.eapi("/api/v1/artist/\(id)")
-        let albums: ArtistAlbumsResponse = try await client.eapi(
-            "/api/artist/albums/\(id)",
-            data: ["limit": 100, "offset": 0, "total": true]
+        let detail: MelodyArtistDetailVO = try await melody.get("/api/melody/artist/v1/\(id)")
+        let artist = detail.artist.map(MelodyMapper.artist)
+            ?? Artist(id: id, name: L10n.string("ui.metadata.unknown_artist"))
+        let albums: MelodyArtistAlbumsVO = try await melody.get(
+            "/api/melody/album/artist/\(id)"
         )
-        return (detail.artist, detail.hotSongs, albums.hotAlbums)
+        return (
+            artist,
+            MelodyMapper.songs(detail.hotSongs),
+            (albums.hotAlbums ?? []).map(MelodyMapper.album)
+        )
     }
 
     func songDetails(ids: [Int]) async throws -> [Song] {
         guard !ids.isEmpty else { return [] }
-        let songs = ids.map { ["id": $0] }
-        let songsData = try JSONSerialization.data(withJSONObject: songs)
-        guard let songsJSON = String(data: songsData, encoding: .utf8) else {
-            throw APIError.requestEncoding
-        }
-        let path = "/api/v3/song/detail"
-        let response: SongDetailResponse
-        do {
-            // Mirrors @neteaseapireborn/api/module/song_detail.js.
-            response = try await client.weapi(
-                path,
-                data: ["c": songsJSON]
+        var collected: [Song] = []
+        // 后端单次上限 2000，这里按 500 一批，避免 URLSession 请求体过大。
+        for start in stride(from: 0, to: ids.count, by: 500) {
+            try Task.checkCancellation()
+            let end = min(start + 500, ids.count)
+            let values: [MelodySongVO] = try await melody.post(
+                "/api/melody/song/batch/detail",
+                body: ["songIds": Array(ids[start..<end])]
             )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            response = try await client.eapi(
-                path,
-                data: ["c": songsJSON]
-            )
+            collected.append(contentsOf: MelodyMapper.songs(values))
         }
-        return response.songs
+        let byID = Dictionary(
+            collected.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return ids.compactMap { byID[$0] }
     }
 
     func songDetailsCollection(
@@ -385,68 +373,36 @@ final class NeteaseAPI {
         quality: MusicQuality,
         availability: SongAudioAvailability
     ) async throws -> PlaybackSource {
-        do {
-            for candidate in quality.playbackCandidates(
-                for: availability
-            ) {
-                do {
-                    return try await requestPlaybackSource(
-                        id: id,
-                        quality: candidate
-                    )
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch APIError.noPlayableSource {
-                    continue
-                }
+        // 逐档降级：后端拿不到该档位时返回空 url，换低一档再试。
+        for candidate in quality.playbackCandidates(for: availability) {
+            do {
+                return try await requestPlaybackSource(id: id, quality: candidate)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch APIError.noPlayableSource {
+                continue
             }
-            throw APIError.noPlayableSource
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            // YesPlayMusic 在未登录时使用网易云官方外链。iOS 先尝试上面的
-            // HTTPS 化原始音源，仅在失败时保留这个官方兜底，避免静默卡在 00:00。
-            guard settings.cookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  let url = URL(string: "https://music.163.com/song/media/outer/url?id=\(id)") else {
-                throw error
-            }
-            return PlaybackSource(
-                url: url,
-                bitrate: nil,
-                format: "mp3",
-                quality: nil
-            )
         }
+        throw APIError.noPlayableSource
     }
 
     private func requestPlaybackSource(
         id: Int,
         quality: MusicQuality
     ) async throws -> PlaybackSource {
-        // Mirrors @neteaseapireborn/api/module/song_url_v1.js.
-        var data: [String: Any] = [
-            "ids": "[\(id)]",
-            "level": quality.apiLevel,
-            "encodeType": "flac",
-        ]
-        if quality.requiresImmersiveType {
-            data["immerseType"] = "c51"
-        }
-        let response: SongURLResponse = try await client.eapi(
-            "/api/song/enhance/player/url/v1",
-            data: data
+        let values: [MelodySongURLVO] = try await melody.post(
+            "/api/melody/song/batch/player/url/v1",
+            body: [
+                "ids": [id],
+                "level": quality.apiLevel,
+                "encodeType": "flac",
+            ]
         )
-        guard let source = response.data.first(where: { $0.id == id }),
-              let string = source.url,
-              let url = securePlaybackURL(from: string) else {
+        guard let vo = values.first(where: { $0.id == id }) ?? values.first,
+              let source = MelodyMapper.playbackSource(vo, requested: quality) else {
             throw APIError.noPlayableSource
         }
-        return PlaybackSource(
-            url: url,
-            bitrate: source.bitrate,
-            format: source.format,
-            quality: source.level.flatMap(MusicQuality.init(apiLevel:))
-        )
+        return source
     }
 
     func downloadSource(
@@ -487,31 +443,8 @@ final class NeteaseAPI {
         id: Int,
         quality: MusicQuality
     ) async throws -> PlaybackSource {
-        // Mirrors @neteaseapireborn/api/module/song_download_url_v1.js.
-        var data: [String: Any] = [
-            "id": id,
-            "level": quality.apiLevel,
-        ]
-        if quality.requiresImmersiveType {
-            data["immerseType"] = "c51"
-        }
-        let response: SongDownloadURLResponse = try await client.eapi(
-            "/api/song/enhance/download/url/v1",
-            data: data
-        )
-        guard let source = response.data,
-              source.id == id,
-              source.freeTrialInfo == nil,
-              let string = source.url,
-              let url = securePlaybackURL(from: string) else {
-            throw APIError.noPlayableSource
-        }
-        return PlaybackSource(
-            url: url,
-            bitrate: source.bitrate,
-            format: source.format,
-            quality: source.level.flatMap(MusicQuality.init(apiLevel:))
-        )
+        // 后端没有单独的下载出口，缓存文件直接用播放地址取全量音源。
+        try await requestPlaybackSource(id: id, quality: quality)
     }
 
     func songURL(id: Int) async throws -> URL {
@@ -519,48 +452,54 @@ final class NeteaseAPI {
     }
 
     func search(_ keywords: String, kind: SearchKind, limit: Int = 30) async throws -> SearchPayload {
-        let response: SearchResponse = try await client.eapi(
-            "/api/search/get",
-            data: ["s": keywords, "type": kind.rawValue, "limit": limit, "offset": 0]
+        guard kind != .podcasts else {
+            // 后端没有播客库，搜索播客直接给空，省掉一次必然失败的往返。
+            return SearchPayload(
+                songs: nil,
+                albums: nil,
+                artists: nil,
+                playlists: nil,
+                podcasts: nil
+            )
+        }
+        let payload: MelodySearchVO = try await melody.get(
+            "/api/melody/search",
+            query: [
+                URLQueryItem(name: "keyword", value: keywords),
+                URLQueryItem(name: "type", value: String(kind.rawValue)),
+                URLQueryItem(name: "limit", value: String(min(max(limit, 1), 100))),
+                URLQueryItem(name: "offset", value: "0"),
+            ]
         )
-        return response.result ?? SearchPayload(
-            songs: nil,
-            albums: nil,
-            artists: nil,
-            playlists: nil,
+        return SearchPayload(
+            songs: payload.songs.map(MelodyMapper.songs),
+            albums: payload.albums.map { $0.map(MelodyMapper.album) },
+            artists: payload.artists.map { $0.map(MelodyMapper.artist) },
+            playlists: payload.playlists.map(MelodyMapper.playlists),
             podcasts: nil
         )
     }
 
     func dailySongs(afresh: Bool = false) async throws -> [Song] {
-        let path = "/api/v3/discovery/recommend/songs"
-        let data: [String: Any] = afresh ? ["afresh": true] : [:]
-        let response: DailySongsResponse
-        do {
-            // Keep the stable transport already used by the iOS client. This
-            // route frequently returns HTTP 200 with an empty weapi body
-            // through CFNetwork, including after its built-in retries.
-            response = try await client.eapi(path, data: data)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            // Preserve the original route and `afresh` parameter if eapi ever
-            // returns an empty body, changing only the transport.
-            response = try await client.weapi(path, data: data)
-        }
-        return response.data.dailySongs
+        // 后端没有"每日推荐"；最近红心是语义上最接近的替代。
+        try await likedSongs(limit: 30)
     }
 
     func similarSongs(id: Int, limit: Int = 50) async throws -> [Song] {
-        let response: SimilarSongsResponse = try await client.weapi(
-            "/api/v1/discovery/simiSong",
-            data: [
-                "songid": id,
-                "limit": limit,
+        // 没有"相似歌曲"算法；退化成"同一位歌手的热门歌"，而且要先知道歌手是谁。
+        guard let song = try await songDetails(ids: [id]).first,
+              let artistID = song.artists.first?.id, artistID > 0 else {
+            return []
+        }
+        let response: MelodyArtistSongsVO = try await melody.post(
+            "/api/melody/song/v1/artist",
+            body: [
+                "artistId": artistID,
+                "limit": min(max(limit, 1), 100),
                 "offset": 0,
             ]
         )
-        return response.songs
+        return MelodyMapper.songs(response.songs).filter { $0.id != id }
     }
 
     func lyrics(id: Int) async throws -> [LyricLine] {
@@ -576,104 +515,39 @@ final class NeteaseAPI {
     }
 
     func neteaseLyrics(id: Int) async throws -> NeteaseLyricPayload {
-        do {
-            let response: LyricResponse = try await client.eapi(
-                "/api/song/lyric/v1",
-                data: [
-                    "id": id,
-                    "cp": false,
-                    "tv": 0,
-                    "lv": 0,
-                    "rv": 0,
-                    "kv": 0,
-                    "yv": 0,
-                    "ytv": 0,
-                    "yrv": 0,
-                ]
-            )
-            return NeteaseLyricPayload(
-                yrc: response.yrc?.lyric,
-                lrc: response.lrc?.lyric,
-                translatedYRC: response.ytlrc?.lyric,
-                translatedLRC: response.tlyric?.lyric,
-                romanizedYRC: response.yromalrc?.lyric,
-                romanizedLRC: response.romalrc?.lyric,
-                isPureMusic: response.pureMusic == true
-            )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            // Keep line-synced lyrics available when the newer YRC route is
-            // temporarily unavailable for a region or catalog item.
-            let response: LyricResponse = try await client.eapi(
-                "/api/song/lyric",
-                data: ["id": id, "tv": -1, "lv": -1, "rv": -1, "kv": -1, "_nmclfl": 1]
-            )
-            return NeteaseLyricPayload(
-                yrc: nil,
-                lrc: response.lrc?.lyric,
-                translatedYRC: nil,
-                translatedLRC: response.tlyric?.lyric,
-                romanizedYRC: nil,
-                romanizedLRC: response.romalrc?.lyric,
-                isPureMusic: response.pureMusic == true
-            )
-        }
+        let response: MelodyLyricVO = try await melody.get(
+            "/api/melody/lyric",
+            query: [URLQueryItem(name: "id", value: String(id))]
+        )
+        return NeteaseLyricPayload(
+            yrc: response.yrc?.lyric,
+            lrc: response.lrc?.lyric,
+            // 后端只有整轨的 ytlrc/yromalrc 缺失，翻译与罗马音都拿 lrc 版本。
+            translatedYRC: nil,
+            translatedLRC: response.tlyric?.lyric,
+            romanizedYRC: nil,
+            romanizedLRC: response.romalrc?.lyric,
+            isPureMusic: response.pureMusic == true
+        )
     }
 
     func accountProfile() async throws -> AccountProfile {
-        do {
-            let response: AccountResponse = try await client.eapi(
-                "/api/w/nuser/account/get",
-                authenticated: true
-            )
-            guard response.code == 200, let profile = response.profile else {
-                throw APIError.notLoggedIn
-            }
-            return profile
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            // 兼容旧账号接口；部分账号在 login_status 的 eapi 传输下
-            // 只返回空 profile，仍应继续尝试原账号接口。
-            let response: AccountResponse = try await client.eapi(
-                "/api/nuser/account/get",
-                authenticated: true
-            )
-            guard response.code == 200, let profile = response.profile else {
-                throw APIError.notLoggedIn
-            }
-            return profile
+        let response: MelodyAccountVO = try await melody.get(
+            "/api/melody/auth/nuser/account/get"
+        )
+        guard let profile = response.profile else {
+            throw APIError.notLoggedIn
         }
+        return MelodyMapper.profile(profile)
     }
 
     func userDetail(userID: Int) async throws -> AccountDetail {
-        let response: AccountDetailResponse
-        do {
-            // Mirrors @neteaseapireborn/api/module/user_detail.js.
-            response = try await client.weapi(
-                "/api/v1/user/detail/\(userID)"
-            )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            // Mirrors user_detail_new.js when the original weapi transport
-            // yields an HTTP 200 empty response through CFNetwork.
-            response = try await client.eapi(
-                "/api/w/v1/user/detail/\(userID)",
-                data: ["all": "true", "userId": userID],
-                authenticated: true
-            )
-        }
-        try validate(responseCode: response.code, message: response.message)
-        guard let profile = response.profile else {
-            throw APIError.invalidResponse
-        }
-        return AccountDetail(
-            profile: profile,
-            level: response.level ?? 0,
-            listenSongs: response.listenSongs ?? 0,
-            createDays: response.createDays
+        // 后端只有一份账号资料，没有等级/听歌数这类统计。
+        AccountDetail(
+            profile: try await accountProfile(),
+            level: 0,
+            listenSongs: 0,
+            createDays: nil
         )
     }
 
@@ -681,55 +555,14 @@ final class NeteaseAPI {
         userID: Int,
         likedPlaylistID: Int? = nil
     ) async throws -> [Int] {
-        if let likedPlaylistID {
-            do {
-                // Only request playlist metadata and ordered track IDs here.
-                // Song details are fetched page by page by LibraryStore.
-                let likedPlaylist = try await playlist(
-                    id: likedPlaylistID,
-                    trackLimit: 0
-                )
-                if !likedPlaylist.trackIDs.isEmpty
-                    || likedPlaylist.trackCount == 0 {
-                    return likedPlaylist.trackIDs.map(\.id)
-                }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                // 喜欢歌单详情不可用时，再回退到喜欢歌曲 ID 接口。
-            }
-        }
-
-        // `likelist` does not opt into weapi in the reference module. With
-        // encryption enabled it therefore uses eapi.
-        let response: LikedSongsResponse = try await client.eapi(
-            "/api/song/like/get",
-            data: ["uid": userID],
-            authenticated: true
-        )
-        try validate(responseCode: response.code)
-        return response.ids
+        // `/song/like` 直接返回全部红心歌曲 ID（后端按加入时间倒序）。
+        let ids: [Int] = try await melody.post("/api/melody/song/like", body: [:])
+        return ids
     }
 
     func userPlaylists(userID: Int, limit: Int = 2_000) async throws -> [Playlist] {
-        // YesPlayMusic intentionally asks for at most 2,000 playlists in one
-        // request. Paging this route caused later empty responses to discard an
-        // otherwise valid first page.
-        // The reference module selects weapi for this route. NetEase returns
-        // HTTP 200 with an empty body to CFNetwork weapi requests, while the
-        // same original route over its supported eapi transport returns JSON.
-        let response: UserPlaylistsResponse = try await client.eapi(
-            "/api/user/playlist",
-            data: [
-                "uid": userID,
-                "limit": limit,
-                "offset": 0,
-                "includeVideo": true,
-            ],
-            authenticated: true
-        )
-        try validate(responseCode: response.code)
-        return response.playlist
+        let values: [MelodyPlaylistVO] = try await melody.get("/api/melody/playlist/user")
+        return Array(MelodyMapper.playlists(values).prefix(max(limit, 1)))
     }
 
     func recentSongs(limit: Int = 100) async throws -> [Song] {
@@ -936,32 +769,28 @@ final class NeteaseAPI {
     }
 
     func setSongLiked(id: Int, isLiked: Bool) async throws {
-        let response: APIStatusResponse = try await client.eapi(
-            "/api/radio/like",
-            data: [
-                "alg": "itembased",
-                "trackId": id,
-                "like": isLiked,
-                "time": "3",
-            ],
-            authenticated: true
+        try await melody.postIgnoringPayload(
+            "/api/melody/song/radio/like",
+            body: ["trackId": id, "like": isLiked]
         )
-        try validate(responseCode: response.code, message: response.message)
     }
 
     func setPlaylistSubscribed(id: Int, isSubscribed: Bool) async throws {
-        // Match the website's WEAPI route; an empty response does not prove the write failed.
-        let path = isSubscribed ? "/api/playlist/subscribe" : "/api/playlist/unsubscribe"
-        let response: APIStatusResponse = try await client.weapi(
-            path,
-            data: ["id": id],
-            retryEmptyResponse: false
-        )
-        try validate(responseCode: response.code, message: response.message)
+        // 后端没有"收藏别人的歌单"这层关系，操作不落盘也不该报错。
     }
 
     func addSong(id: Int, toPlaylistID playlistID: Int) async throws {
         try await manipulatePlaylistTrack(id: id, playlistID: playlistID, operation: "add")
+    }
+
+    /// 最近红心的歌：先取 ID 顺序，再批量补详情。
+    /// 后端 `/song/like` 按加入时间倒序返回，所以前缀就是"最近喜欢的"。
+    func melodyLikedSongs(limit: Int) async throws -> [Song] {
+        let ids = try await likedSongIDs(userID: 0)
+        guard !ids.isEmpty else { return [] }
+        return try await songDetailsCollection(
+            ids: Array(ids.prefix(max(limit, 1)))
+        )
     }
 
     func validate(responseCode: Int, message: String? = nil) throws {

@@ -113,6 +113,9 @@ final class AppSettings {
     static let lyricsHighlightGradientReductionRange = 0.0...1.0
     private enum Key {
         static let hasCompletedOnboarding = "melox.hasCompletedOnboarding"
+        // 本 fork 的音源后端地址。`cookie` 键继续存在，但存的是 Melody 的 API
+        // 令牌（Bearer），不是网易云的网页 cookie。
+        static let melodyServerURL = "melodyServerURL"
         static let cookie = "musicCookie"
         static let quality = "musicQuality"
         static let cellularQuality = "cellularMusicQuality"
@@ -280,6 +283,11 @@ final class AppSettings {
 
     var cookie: String {
         didSet { defaults.set(cookie, forKey: Key.cookie) }
+    }
+
+    /// Melody 后端根地址；空串表示用编译期默认值。
+    var melodyServerURL: String {
+        didSet { defaults.set(melodyServerURL, forKey: Key.melodyServerURL) }
     }
 
     var automaticallyCachesPageContent: Bool {
@@ -1333,6 +1341,7 @@ final class AppSettings {
         searchSuggestionsEnabled = defaults.object(forKey: Key.searchSuggestionsEnabled) as? Bool ?? true
         L10n.activate(storedAppLanguage)
         cookie = defaults.string(forKey: Key.cookie) ?? ""
+        melodyServerURL = defaults.string(forKey: Key.melodyServerURL) ?? ""
         quality = MusicQuality(rawValue: defaults.string(forKey: Key.quality) ?? "") ?? .high
         cellularQuality = MusicQuality(
             rawValue: defaults.string(forKey: Key.cellularQuality) ?? ""

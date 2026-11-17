@@ -2168,3 +2168,12 @@
 "ui.library.search.loading" = "正在搜索全部收藏…";
 "ui.library.search.empty.title" = "没有找到收藏歌曲";
 "ui.library.search.empty.description" = "试试其他歌名、歌手或专辑名。";
+"ui.melody.login.mode" = "登录方式";
+"ui.melody.login.mode.password" = "口令";
+"ui.melody.login.mode.token" = "令牌";
+"ui.melody.login.server" = "服务器地址";
+"ui.melody.login.server.footer" = "除非你自建了 Melody 后端，否则保持默认即可。";
+"ui.melody.login.password" = "面板口令";
+"ui.melody.login.token" = "API 令牌";
+"ui.melody.login.password.footer" = "登录时用口令换一枚 API 令牌，令牌只保存在本机。";
+"ui.melody.login.token.footer" = "粘贴在面板里创建的令牌；保存前会先验证一次。";
