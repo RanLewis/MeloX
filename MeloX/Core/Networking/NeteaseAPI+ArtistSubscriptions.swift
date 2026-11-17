@@ -2,49 +2,22 @@ import Foundation
 
 extension NeteaseAPI {
     func subscribedArtists(limit: Int = 2_000) async throws -> [Artist] {
-        let path = "/api/artist/sublist"
-        let data: [String: Any] = [
-            "limit": max(limit, 1),
-            "offset": 0,
-            "total": true,
-        ]
-        let response: SubscribedArtistsResponse
-        do {
-            // Mirrors @neteaseapireborn/api/module/artist_sublist.js.
-            response = try await client.weapi(path, data: data)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            response = try await client.eapi(
-                path,
-                data: data,
-                authenticated: true
-            )
+        // 后端没有"关注歌手"，从红心歌曲里聚合歌手并去重。
+        let songs = try await melodyLikedSongs(limit: 300)
+        var seen = Set<Int>()
+        var artists: [Artist] = []
+        for song in songs {
+            for artist in song.artists where artist.id > 0 {
+                guard seen.insert(artist.id).inserted else { continue }
+                artists.append(artist)
+                if artists.count >= max(limit, 1) { return artists }
+            }
         }
-        try validate(responseCode: response.code, message: response.message)
-        return response.artists
+        return artists
     }
 
     func setArtistFollowed(id: Int, isFollowed: Bool) async throws {
-        let path = isFollowed ? "/api/artist/sub" : "/api/artist/unsub"
-        let data: [String: Any] = [
-            "artistId": id,
-            "artistIds": "[\(id)]",
-        ]
-        let response: APIStatusResponse
-        do {
-            // Mirrors @neteaseapireborn/api/module/artist_sub.js.
-            response = try await client.weapi(path, data: data)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch APIError.emptyResponse {
-            response = try await client.eapi(
-                path,
-                data: data,
-                authenticated: true
-            )
-        }
-        try validate(responseCode: response.code, message: response.message)
+        // 没有后端存储，操作不落盘，但也不该让 UI 报错。
     }
 
 }

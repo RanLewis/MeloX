@@ -100,7 +100,7 @@ final class NeteaseAPI {
 
     func newAlbums(limit: Int = 10, area: String? = nil) async throws -> [Album] {
         // 没有"新碟上架"数据源；从收藏歌曲里按专辑去重，给出的是真实存在的封面墙。
-        let songs = try await likedSongs(limit: 300)
+        let songs = try await melodyLikedSongs(limit: 300)
         var seen = Set<Int>()
         var albums: [Album] = []
         for song in songs {
@@ -120,7 +120,7 @@ final class NeteaseAPI {
 
     func topArtists() async throws -> [Artist] {
         // 从收藏歌曲里聚合歌手，按出现次数排序。后端没有歌手榜单。
-        let songs = try await likedSongs(limit: 300)
+        let songs = try await melodyLikedSongs(limit: 300)
         var counts: [Int: (artist: Artist, hits: Int)] = [:]
         for song in songs {
             for artist in song.artists where artist.id > 0 {
@@ -148,7 +148,7 @@ final class NeteaseAPI {
         // 后端一次返回全量曲目（和网易的分页语义不同），客户端自己截断。
         let response: MelodyPlaylistDetailVO = try await melody.get(
             "/api/melody/playlist/detail",
-            query: [URLQueryItem(name: "id", value: String(id))]
+            query: [URLQueryItem(name: "playlistId", value: String(id))]
         )
         guard var playlist = MelodyMapper.playlistDetail(response) else {
             throw APIError.invalidResponse
@@ -482,7 +482,7 @@ final class NeteaseAPI {
 
     func dailySongs(afresh: Bool = false) async throws -> [Song] {
         // 后端没有"每日推荐"；最近红心是语义上最接近的替代。
-        try await likedSongs(limit: 30)
+        try await melodyLikedSongs(limit: 30)
     }
 
     func similarSongs(id: Int, limit: Int = 50) async throws -> [Song] {

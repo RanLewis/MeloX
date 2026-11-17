@@ -6,50 +6,31 @@ extension NeteaseAPI {
     }
 
     func manipulatePlaylistTrack(id: Int, playlistID: Int, operation: String) async throws {
-        // The original route and parameters follow playlist_tracks.js;
-        // use the authenticated versioned EAPI route, as for adding tracks.
-        let path = "/api/v1/playlist/manipulate/tracks"
-        let trackID = String(id)
-        var response: APIStatusResponse = try await client.eapi(
-            path,
-            data: ["op": operation, "pid": playlistID, "trackIds": "[\"\(trackID)\"]", "imme": "true"],
-            authenticated: true
+        // 后端的 op 只认 add / del，`trackIds` 是数字数组（网易那边是 JSON 字符串）。
+        let op = operation == "del" ? "del" : "add"
+        try await melody.postIgnoringPayload(
+            "/api/melody/playlist/manipulate/tracks",
+            body: [
+                "op": op,
+                "pid": playlistID,
+                "trackIds": [id],
+            ]
         )
-        if response.code == 512 {
-            response = try await client.eapi(
-                path,
-                data: ["op": operation, "pid": playlistID, "trackIds": "[\"\(trackID)\",\"\(trackID)\"]", "imme": "true"],
-                authenticated: true
-            )
-        }
-        try validate(responseCode: response.code, message: response.message)
     }
 
     func deletePlaylist(id: Int) async throws {
-        // Mirrors @neteaseapireborn/api/module/playlist_delete.js.
-        let response: APIStatusResponse = try await client.weapi(
-            "/api/playlist/remove",
-            data: ["ids": "[\(id)]"]
+        // 后端没有歌单删除出口：只同步网易侧的歌单，不在本地建删。
+        throw APIError.server(
+            statusCode: 501,
+            message: L10n.string("ui.error.api.operation_incomplete")
         )
-        try validate(responseCode: response.code, message: response.message)
     }
 
     func createPlaylist(name: String, isPrivate: Bool) async throws -> Playlist {
-        // Mirrors @neteaseapireborn/api/module/playlist_create.js.
-        let response: PlaylistCreationResponse = try await client.weapi(
-            "/api/playlist/create",
-            data: ["name": name, "privacy": isPrivate ? "10" : "0", "type": "NORMAL"]
+        // 同上：后端只镜像已存在的歌单，没有创建入口。
+        throw APIError.server(
+            statusCode: 501,
+            message: L10n.string("ui.error.api.operation_incomplete")
         )
-        try validate(responseCode: response.code, message: response.message)
-        guard let playlist = response.playlist, playlist.id > 0 else {
-            throw APIError.invalidResponse
-        }
-        return playlist
     }
-}
-
-private struct PlaylistCreationResponse: Decodable {
-    let code: Int
-    let playlist: Playlist?
-    let message: String?
 }
